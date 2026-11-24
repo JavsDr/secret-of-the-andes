@@ -1,5 +1,5 @@
-# Secret of the Andes · private preview
+# Secret of the Andes
 
-This page is password protected. The content is encrypted in the browser with [StatiCrypt](https://github.com/robinmoisson/staticrypt); without the password it cannot be read.
+The [public site](https://javsdr.github.io/secret-of-the-andes/) introduces three sample journeys through Chilean Patagonia, with regional maps, seasonal daylight, photographs and travel questions. The [eight-day Estancias & Glaciers itinerary](https://javsdr.github.io/secret-of-the-andes/patagonia/) has a printable PDF and an email enquiry link.
 
-Photos: travelers on Flickr, used under their Creative Commons licenses. Each photo's credit and license are listed on the page.
+The photographs are licensed by their original creators. See the source, author and Creative Commons licence in the site's photo credits.
