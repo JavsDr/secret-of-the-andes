@@ -1,0 +1,13 @@
+{
+  "name": "secret-of-the-andes-hosting",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "db:generate": "drizzle-kit generate --name trip_enquiries",
+    "build": "node build.mjs"
+  },
+  "devDependencies": {
+    "drizzle-kit": "0.31.8",
+    "drizzle-orm": "0.44.7"
+  }
+}

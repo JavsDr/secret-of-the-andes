@@ -1,0 +1,13 @@
+.trip-form {display:grid;gap:.85rem;max-width:44rem;margin-block:1.25rem;color:#143d32;text-align:left}
+.trip-form[hidden],.trip-form [hidden] {display:none}
+.trip-form label {display:grid;gap:.28rem;font-size:1rem;font-weight:650}
+.trip-form input,.trip-form select,.trip-form textarea {box-sizing:border-box;min-height:46px;width:100%;min-width:0;border:1px solid #778e80;border-radius:.3rem;padding:.6rem .7rem;font:inherit;font-weight:400;color:#16382d;background:#fff}
+.trip-form textarea {resize:vertical}
+.trip-form :focus-visible,.trip-status:focus-visible {outline:3px solid #a54826;outline-offset:2px}
+.trip-pair {display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+.trip-form .trip-note {font-size:.93rem;line-height:1.45;margin:0}
+.trip-form button {justify-self:start;cursor:pointer;min-height:48px}
+.trip-form button:disabled {opacity:.65}
+.trip-status:not(:empty) {background:#ecf3e9;color:#153b2b;padding:.9rem 1rem;margin:1rem 0;max-width:44rem;border-left:3px solid #315a42}
+@media(max-width:490px){.trip-pair{grid-template-columns:1fr}}
+@media print{#trip-enquiry{display:none}}
