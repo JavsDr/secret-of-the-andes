@@ -19,3 +19,10 @@ export const enquiries = sqliteTable("enquiries", {
 export const submissionWindows = sqliteTable("submission_windows", {
   key: text().primaryKey(), expires: integer().notNull(), count: integer().notNull()
 });
+
+export const tripSessions = sqliteTable("trip_sessions", {
+  session_key: text().primaryKey(),
+  source: text().notNull(),
+  first_visit_at: integer().notNull(),
+  first_enquiry_at: integer()
+}, table => [index("trip_sessions_first_visit").on(table.first_visit_at)]);

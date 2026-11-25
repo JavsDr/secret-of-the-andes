@@ -13,7 +13,11 @@ assert settings.get("project_id")
 settings.update(d1="DB", r2=None)
 manifest.write_text(json.dumps(settings, indent=2) + "\n")
 public = dest / "public"
-public.mkdir(exist_ok=True)
+if public.is_symlink() or public == repo:
+    raise ValueError("Use the dedicated Sites source checkout")
+if public.exists():
+    shutil.rmtree(public)
+public.mkdir()
 paths = [repo / name for name in ("index.html","attribution.js","site.css","robots.txt","sitemap.xml")]
 for folder in ("img","journeys","photographs","patagonia"):
     paths.extend((repo / folder).rglob("*"))

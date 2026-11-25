@@ -4,6 +4,76 @@ const digest = value => crypto.subtle.digest('SHA-256',new TextEncoder().encode(
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const journeys = {estancias:'Estancias & Glaciers',unhurried:'Torres del Paine, Unhurried',private:'Private Patagonia'};
 const replyError = (code, status) => json({error:code},status);
+const dayMs = 86400000;
+const retentionDays = 90;
+const testSource = source => /^utm:(usability_test|user_test)(?:\/|$)/i.test(source);
+const isSessionKey = key => typeof key === 'string' && uuid.test(key);
+const validOrigin = request => !request.headers.get('Origin') || request.headers.get('Origin') === new URL(request.url).origin;
+
+// Only fixed channel names reach the metrics table. Campaign text and referrers can contain personal details.
+function funnelSource(source) {
+  if (['direct/unknown','instagram','search','referral','website'].includes(source)) return source;
+  if (!source.startsWith('utm:')) return 'direct/unknown';
+  const [name,medium] = source.slice(4).split('/');
+  if (['instagram','ig','l.instagram.com'].includes(name)) return 'instagram';
+  if (['google','bing','duckduckgo'].includes(name)) return 'search';
+  if (['email','newsletter'].includes(name) || medium === 'email') return 'email';
+  if (name === 'itinerary_pdf') return 'itinerary_pdf';
+  if (name === 'facebook' || name === 'fb') return 'facebook';
+  return 'other_campaign';
+}
+const pruneSessions = (db, now) => db.prepare('DELETE FROM trip_sessions WHERE first_visit_at < ?').bind(now - retentionDays * dayMs);
+
+async function rateLimited(request,env,now,kind) {
+  const ip = request.headers.get('CF-Connecting-IP');
+  if (!ip) return false;
+  const hour = Math.floor(now / 3600000);
+  const parts = [env.INTAKE_TOKEN,hour,ip];
+  if (kind === 'visit') parts.unshift('visit');
+  const key = hex(await digest(JSON.stringify(parts)));
+  const [, bucket] = await env.DB.batch([
+    env.DB.prepare('DELETE FROM submission_windows WHERE expires < ?').bind(Math.floor(now / 1000)),
+    env.DB.prepare('INSERT INTO submission_windows(key,expires,count) VALUES (?,?,1) ON CONFLICT(key) DO UPDATE SET count=count+1 RETURNING count').bind(key,(hour+1)*3600)
+  ]);
+  return bucket.results[0].count > (kind === 'visit' ? 240 : 20);
+}
+async function visit(request,env) {
+  if (!validOrigin(request)) return replyError('origin',403);
+  const data = await input(request);
+  if (!isSessionKey(data?.session_key) || typeof data.source !== 'string' || data.source.length > 160) return replyError('invalid_visit',400);
+  const test = testSource(data.source) || (request.headers.get('X-Enquiry-Test') === '1' && await authorized(request,env));
+  if (!test) {
+    const now = Date.now();
+    const session = data.session_key.toLowerCase();
+    const existing = await env.DB.prepare('SELECT 1 FROM trip_sessions WHERE session_key=? AND first_visit_at>=?').bind(session,now-retentionDays*dayMs).first();
+    if (existing) return json({ok:true});
+    if (await rateLimited(request,env,now,'visit')) return replyError('rate_limit',429);
+    await env.DB.batch([
+      pruneSessions(env.DB,now),
+      env.DB.prepare('INSERT INTO trip_sessions(session_key,source,first_visit_at) VALUES (?,?,?) ON CONFLICT(session_key) DO NOTHING')
+        .bind(session,funnelSource(data.source),now)
+    ]);
+  }
+  return json({ok:true});
+}
+async function funnelReport(url,db) {
+  const raw = url.searchParams.get('days') ?? '30';
+  if (!/^[1-9][0-9]?$/.test(raw) || Number(raw) > retentionDays) return replyError('invalid_days',400);
+  const days = Number(raw);
+  const through = Date.now();
+  const from = through - days * dayMs;
+  const [, result] = await db.batch([
+    pruneSessions(db,through),
+    db.prepare('SELECT source,COUNT(*) AS sessions,COUNT(first_enquiry_at) AS enquiring_sessions FROM trip_sessions WHERE first_visit_at BETWEEN ? AND ? GROUP BY source ORDER BY sessions DESC,source').bind(from,through)
+  ]);
+  const rate = row => ({...row,conversion_rate:row.sessions ? row.enquiring_sessions / row.sessions : null});
+  const totals = {sessions:0,enquiring_sessions:0};
+  for (const row of result.results) {
+    totals.sessions += row.sessions;
+    totals.enquiring_sessions += row.enquiring_sessions;
+  }
+  return json({days,from:new Date(from).toISOString(),through:new Date(through).toISOString(),totals:rate(totals),by_source:result.results.map(rate)});
+}
 
 async function authorized(request, env) {
   if (!env.INTAKE_TOKEN) return false;
@@ -28,8 +98,7 @@ async function input(request) {
   try { const v = await new Response(new Blob(chunks)).json(); return v && typeof v === 'object' && !Array.isArray(v) ? v : undefined; } catch {}
 }
 async function receive(request,env) {
-  const origin = request.headers.get('Origin');
-  if (origin && origin !== new URL(request.url).origin) return replyError('origin',403);
+  if (!validOrigin(request)) return replyError('origin',403);
   const raw = await input(request);
   if (!raw || raw.website || typeof raw.request_key !== 'string' || !uuid.test(raw.request_key) || typeof raw.journey !== 'string' || !Object.hasOwn(journeys,raw.journey)) return replyError('invalid_form',400);
   const fields = {};
@@ -47,24 +116,28 @@ async function receive(request,env) {
   const existing = await query.first();
   if (existing) return receipt(existing);
   const now = new Date();
-  const ip = request.headers.get('CF-Connecting-IP');
-  if (ip && !isTest) {
-    const hour = Math.floor(now.getTime()/3600000);
-    const key = hex(await digest(JSON.stringify([env.INTAKE_TOKEN,hour,ip])));
-    const expires = (hour+1)*3600;
-    const [, bucket] = await env.DB.batch([
-      env.DB.prepare('DELETE FROM submission_windows WHERE expires < ?').bind(Math.floor(now.getTime()/1000)),
-      env.DB.prepare('INSERT INTO submission_windows(key,expires,count) VALUES (?,?,1) ON CONFLICT(key) DO UPDATE SET count=count+1 RETURNING count').bind(key,expires)
-    ]);
-    if (bucket.results[0].count > 20) return replyError('rate_limit',429);
-  }
+  if (!isTest && await rateLimited(request,env,now.getTime(),'enquiry')) return replyError('rate_limit',429);
   const id = 'PA-' + crypto.randomUUID().replaceAll('-','').slice(0,16).toUpperCase();
-  const insert = await env.DB.prepare('INSERT INTO enquiries(id,request_key,fingerprint,email,name,journey,month,travelers,question,source,received_at,is_test) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(request_key) DO NOTHING')
-    .bind(id,raw.request_key,fingerprint,fields.email,fields.name,journeys[raw.journey],fields.month,fields.travelers,fields.question,fields.source,now.toISOString(),isTest).run();
+  const store = env.DB.prepare('INSERT INTO enquiries(id,request_key,fingerprint,email,name,journey,month,travelers,question,source,received_at,is_test) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(request_key) DO NOTHING')
+    .bind(id,raw.request_key,fingerprint,fields.email,fields.name,journeys[raw.journey],fields.month,fields.travelers,fields.question,fields.source,now.toISOString(),isTest);
+  let insert;
+  if (isSessionKey(raw.session_key) && (isTest || !testSource(fields.source))) {
+    const session = raw.session_key.toLowerCase();
+    // The newly generated receipt exists only for the winning insert, so a retry cannot convert another session.
+    const receiptExists = ' AND EXISTS (SELECT 1 FROM enquiries WHERE id=?)';
+    const mark = isTest
+      ? env.DB.prepare('DELETE FROM trip_sessions WHERE session_key=?' + receiptExists).bind(session,id)
+      : env.DB.prepare('UPDATE trip_sessions SET first_enquiry_at=? WHERE session_key=? AND first_enquiry_at IS NULL AND first_visit_at BETWEEN ? AND ?' + receiptExists)
+          .bind(now.getTime(),session,now.getTime()-dayMs,now.getTime(),id);
+    try { [insert] = await env.DB.batch([store,mark]); }
+    catch { /* Metrics are optional. A missing metrics table must never prevent an enquiry. */ }
+  }
+  if (!insert) insert = await store.run();
   return insert.meta.changes ? json({id},201) : receipt(await query.first());
 }
 async function internal(request,env,url) {
   if (!await authorized(request,env)) return replyError('unauthorized',401);
+  if (request.method === 'GET' && url.pathname === '/api/internal/funnel') return funnelReport(url,env.DB);
   if (request.method === 'GET' && url.pathname === '/api/internal/enquiries') {
     const limit = Math.min(50,Math.max(1,Number.parseInt(url.searchParams.get('limit') || '25',10) || 25));
     const {results} = await env.DB.prepare('SELECT id,email,name,journey,month,travelers,question,source,received_at,is_test FROM enquiries WHERE acknowledged_at IS NULL ORDER BY received_at,id LIMIT ?').bind(limit).all();
@@ -85,6 +158,7 @@ export default {
     const url = new URL(request.url);
     try {
       if (url.pathname.startsWith('/api/internal/')) return await internal(request,env,url);
+      if (url.pathname === '/api/funnel/visit') return request.method === 'POST' ? await visit(request,env) : replyError('method',405);
       if (url.pathname === '/api/enquiries') return request.method === 'POST' ? await receive(request,env) : replyError('method',405);
       if (!['GET','HEAD'].includes(request.method)) return replyError('method',405);
       let key=url.pathname;

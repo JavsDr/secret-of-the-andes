@@ -22,6 +22,35 @@
   for (const month of ['January','February','March','April','May','June','July','August','September','October','November','December']) field('month').add(new Option(month,month));
   const journey = new URLSearchParams(location.search).get('journey');
   if (['unhurried','private','estancias'].includes(journey)) field('journey').value = journey;
+
+  // Count a measured tab once. Storage or measurement failures leave the form available.
+  const analyticsStorage = 'andes.trip.visit.v1';
+  const dayMs = 86400000;
+  const source = window.andesTripSource || 'direct/unknown';
+  let session;
+  function measureVisit() {
+    if (/^utm:(usability_test|user_test)(?:\/|$)/i.test(source)) return;
+    try {
+      let saved;
+      try { saved = JSON.parse(sessionStorage.getItem(analyticsStorage)); } catch {}
+      const now = Date.now();
+      if (typeof saved?.key !== 'string' || !Number.isFinite(saved.started) || saved.started > now || now - saved.started >= dayMs) {
+        saved = {key:crypto.randomUUID(),started:now,measured:false};
+        sessionStorage.setItem(analyticsStorage,JSON.stringify(saved));
+      }
+      session = saved;
+      if (session.measured) return;
+      const current = session;
+      fetch('/api/funnel/visit',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'omit',keepalive:true,
+        body:JSON.stringify({session_key:current.key,source})})
+        .then(response => {
+          if (!response.ok || JSON.parse(sessionStorage.getItem(analyticsStorage))?.key !== current.key) return;
+          current.measured = true;
+          sessionStorage.setItem(analyticsStorage,JSON.stringify(current));
+        }).catch(() => {});
+    } catch { session = undefined; }
+  }
+  measureVisit();
   let retryKey, previousBody, sending = false;
   form.addEventListener('submit', async event => {
     event.preventDefault();
@@ -30,8 +59,9 @@
     button.disabled = true;
     status.textContent = 'Sending your enquiry…';
     const body = Object.fromEntries(new FormData(form));
-    body.source = window.andesTripSource || 'direct/unknown';
+    body.source = source;
     const snapshot = JSON.stringify(body);
+    if (session && Date.now() - session.started < dayMs) body.session_key = session.key;
     if (previousBody !== snapshot) retryKey = crypto.randomUUID();
     previousBody = snapshot;
     try {
