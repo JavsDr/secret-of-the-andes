@@ -126,7 +126,7 @@ async function receive(request,env) {
     // The newly generated receipt exists only for the winning insert, so a retry cannot convert another session.
     const receiptExists = ' AND EXISTS (SELECT 1 FROM enquiries WHERE id=?)';
     const mark = isTest
-      ? env.DB.prepare('DELETE FROM trip_sessions WHERE session_key=?' + receiptExists).bind(session,id)
+      ? env.DB.prepare('DELETE FROM trip_sessions WHERE session_key=? AND first_enquiry_at IS NULL' + receiptExists).bind(session,id)
       : env.DB.prepare('UPDATE trip_sessions SET first_enquiry_at=? WHERE session_key=? AND first_enquiry_at IS NULL AND first_visit_at BETWEEN ? AND ?' + receiptExists)
           .bind(now.getTime(),session,now.getTime()-dayMs,now.getTime(),id);
     try { [insert] = await env.DB.batch([store,mark]); }
